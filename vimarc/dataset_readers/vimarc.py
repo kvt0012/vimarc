@@ -74,9 +74,8 @@ class VimarcReader(DatasetReader):
     ) -> None:
         super().__init__(**kwargs)
         self.instance_format = instance_format
-        if self.instance_format != "bert":
-            self._tokenizer = tokenizer or SpacyTokenizer()
-            self._token_indexers = token_indexers or {"tokens": SingleIdTokenIndexer()}
+        self._tokenizer = tokenizer or SpacyTokenizer()
+        self._token_indexers = token_indexers or {"tokens": SingleIdTokenIndexer()}
         self.context_length_limit = context_length_limit
         self.question_length_limit = question_length_limit
         self.skip_impossible_question = skip_impossible_questions
@@ -153,7 +152,7 @@ class VimarcReader(DatasetReader):
         if answer_annotations:
             # Currently we only use the first annotated answer here, but actually this doesn't affect
             # the training, because we only have one annotation for the train set.
-            answer_type, answer_texts = self.extract_answer_info_from_annotation(
+            answer_type, answer_texts = extract_answer_info_from_annotation(
                 answer_annotations[0]
             )
 
@@ -166,7 +165,7 @@ class VimarcReader(DatasetReader):
 
         if self.instance_format == "squad":
             valid_context_spans = (
-                self.find_valid_spans(context_tokens, tokenized_answer_texts)
+                find_valid_spans(context_tokens, tokenized_answer_texts)
                 if tokenized_answer_texts
                 else []
             )
@@ -192,48 +191,11 @@ class VimarcReader(DatasetReader):
                     "answer_annotations": answer_annotations,
                 },
             )
-        elif self.instance_format == "bert":
-            question_concat_context_tokens = question_tokens + [Token("[SEP]")] + context_tokens
-            valid_context_spans = []
-            for span in self.find_valid_spans(context_tokens, tokenized_answer_texts):
-                # This span is for `question + [SEP] + context`.
-                valid_context_spans.append(
-                    (span[0] + len(question_tokens) + 1, span[1] + len(question_tokens) + 1)
-                )
-            if not valid_context_spans:
-                if "context_span" in self.skip_when_all_empty:
-                    return None
-                else:
-                    valid_context_spans.append(
-                        (
-                            len(question_concat_context_tokens) - 1,
-                            len(question_concat_context_tokens) - 1,
-                        )
-                    )
-            answer_info = {
-                "answer_texts": answer_texts,  # this `answer_texts` will not be used for evaluation
-                "answer_context_spans": valid_context_spans,
-            }
-            return self.make_bert_drop_instance(
-                question_tokens,
-                context_tokens,
-                question_concat_context_tokens,
-                self._token_indexers,
-                context_text,
-                answer_info,
-                additional_metadata={
-                    "original_context": context_text,
-                    "original_question": question_text,
-                    "context_id": context_id,
-                    "question_id": question_id,
-                    "answer_annotations": answer_annotations,
-                },
-            )
         elif self.instance_format == "drop":
             numbers_in_context = []
             number_indices = []
             for token_index, token in enumerate(context_tokens):
-                number = self.convert_word_to_number(token.text)
+                number = convert_word_to_number(token.text)
                 if number is not None:
                     numbers_in_context.append(number)
                     number_indices.append(token_index)
@@ -243,12 +205,12 @@ class VimarcReader(DatasetReader):
             numbers_as_tokens = [Token(str(number)) for number in numbers_in_context]
 
             valid_context_spans = (
-                self.find_valid_spans(context_tokens, tokenized_answer_texts)
+                find_valid_spans(context_tokens, tokenized_answer_texts)
                 if tokenized_answer_texts
                 else []
             )
             valid_question_spans = (
-                self.find_valid_spans(question_tokens, tokenized_answer_texts)
+                find_valid_spans(question_tokens, tokenized_answer_texts)
                 if tokenized_answer_texts
                 else []
             )
@@ -256,19 +218,19 @@ class VimarcReader(DatasetReader):
             target_numbers = []
             # `answer_texts` is a list of valid answers.
             for answer_text in answer_texts:
-                number = self.convert_word_to_number(answer_text)
+                number = convert_word_to_number(answer_text)
                 if number is not None:
                     target_numbers.append(number)
             valid_signs_for_add_sub_expressions: List[List[int]] = []
             valid_counts: List[int] = []
             if answer_type in ["number", "date"]:
-                valid_signs_for_add_sub_expressions = self.find_valid_add_sub_expressions(
+                valid_signs_for_add_sub_expressions = find_valid_add_sub_expressions(
                     numbers_in_context, target_numbers
                 )
             if answer_type in ["number"]:
                 # Currently we only support count number 0 ~ 9
                 numbers_for_count = list(range(10))
-                valid_counts = self.find_valid_counts(numbers_for_count, target_numbers)
+                valid_counts = find_valid_counts(numbers_for_count, target_numbers)
 
             type_to_answer_map = {
                 "context_span": valid_context_spans,
@@ -438,135 +400,135 @@ class VimarcReader(DatasetReader):
         fields["metadata"] = MetadataField(metadata)
         return Instance(fields)
 
-    @staticmethod
-    def extract_answer_info_from_annotation(
-            answer_annotation: Dict[str, Any]
-    ) -> Tuple[str, List[str]]:
-        answer_type = None
-        if answer_annotation["spans"]:
-            answer_type = "spans"
-        elif answer_annotation["number"]:
-            answer_type = "number"
-        elif any(answer_annotation["date"].values()):
-            answer_type = "date"
 
-        answer_content = answer_annotation[answer_type] if answer_type is not None else None
+def find_valid_counts(count_numbers: List[int], targets: List[int]) -> List[int]:
+    valid_indices = []
+    for index, number in enumerate(count_numbers):
+        if number in targets:
+            valid_indices.append(index)
+    return valid_indices
 
-        answer_texts: List[str] = []
-        if answer_type is None:  # No answer
-            pass
-        elif answer_type == "spans":
-            # answer_content is a list of string in this case
-            answer_texts = answer_content
-        elif answer_type == "date":
-            # answer_content is a dict with "month", "day", "year" as the keys
-            date_tokens = [
-                answer_content[key]
-                for key in ["month", "day", "year"]
-                if key in answer_content and answer_content[key]
-            ]
-            answer_texts = date_tokens
-        elif answer_type == "number":
-            # answer_content is a string of number
-            answer_texts = [answer_content]
-        return answer_type, answer_texts
 
-    @staticmethod
-    def convert_word_to_number(word: str, try_to_include_more_numbers=False):
-        """
-        Currently we only support limited types of conversion.
-        """
-        if try_to_include_more_numbers:
-            # strip all punctuations from the sides of the word, except for the negative sign
-            punctruations = string.punctuation.replace("-", "")
-            word = word.strip(punctruations)
-            # some words may contain the comma as deliminator
-            word = word.replace(",", "")
-            # word2num will convert hundred, thousand ... to number, but we skip it.
-            if word in ["hundred", "thousand", "million", "billion", "trillion"]:
-                return None
+def find_valid_add_sub_expressions(
+        numbers: List[int], targets: List[int], max_number_of_numbers_to_consider: int = 2
+) -> List[List[int]]:
+    valid_signs_for_add_sub_expressions = []
+    # TODO: Try smaller numbers?
+    for number_of_numbers_to_consider in range(2, max_number_of_numbers_to_consider + 1):
+        possible_signs = list(itertools.product((-1, 1), repeat=number_of_numbers_to_consider))
+        for number_combination in itertools.combinations(
+                enumerate(numbers), number_of_numbers_to_consider
+        ):
+            indices = [it[0] for it in number_combination]
+            values = [it[1] for it in number_combination]
+            for signs in possible_signs:
+                eval_value = sum(sign * value for sign, value in zip(signs, values))
+                if eval_value in targets:
+                    labels_for_numbers = [0] * len(numbers)  # 0 represents ``not included''.
+                    for index, sign in zip(indices, signs):
+                        labels_for_numbers[index] = (
+                            1 if sign == 1 else 2
+                        )  # 1 for positive, 2 for negative
+                    valid_signs_for_add_sub_expressions.append(labels_for_numbers)
+    return valid_signs_for_add_sub_expressions
+
+
+def find_valid_spans(
+        context_tokens: List[Token], answer_texts: List[str]
+) -> List[Tuple[int, int]]:
+    normalized_tokens = [
+        token.text.lower().strip(STRIPPED_CHARACTERS) for token in context_tokens
+    ]
+    word_positions: Dict[str, List[int]] = defaultdict(list)
+    for i, token in enumerate(normalized_tokens):
+        word_positions[token].append(i)
+    spans = []
+    for answer_text in answer_texts:
+        answer_tokens = answer_text.lower().strip(STRIPPED_CHARACTERS).split()
+        num_answer_tokens = len(answer_tokens)
+        if answer_tokens[0] not in word_positions:
+            continue
+        for span_start in word_positions[answer_tokens[0]]:
+            span_end = span_start  # span_end is _inclusive_
+            answer_index = 1
+            while answer_index < num_answer_tokens and span_end + 1 < len(normalized_tokens):
+                token = normalized_tokens[span_end + 1]
+                if answer_tokens[answer_index].strip(STRIPPED_CHARACTERS) == token:
+                    answer_index += 1
+                    span_end += 1
+                elif token in IGNORED_TOKENS:
+                    span_end += 1
+                else:
+                    break
+            if num_answer_tokens == answer_index:
+                spans.append((span_start, span_end))
+    return spans
+
+
+def convert_word_to_number(word: str, try_to_include_more_numbers=False):
+    """
+    Currently we only support limited types of conversion.
+    """
+    if try_to_include_more_numbers:
+        # strip all punctuations from the sides of the word, except for the negative sign
+        punctruations = string.punctuation.replace("-", "")
+        word = word.strip(punctruations)
+        # some words may contain the comma as deliminator
+        word = word.replace(",", "")
+        # word2num will convert hundred, thousand ... to number, but we skip it.
+        if word in ["hundred", "thousand", "million", "billion", "trillion"]:
+            return None
+        try:
+            number = word_to_num(word)
+        except ValueError:
             try:
-                number = word_to_num(word)
+                number = int(word)
             except ValueError:
                 try:
-                    number = int(word)
-                except ValueError:
-                    try:
-                        number = float(word)
-                    except ValueError:
-                        number = None
-            return number
-        else:
-            no_comma_word = word.replace(",", "")
-            if no_comma_word in WORD_NUMBER_MAP:
-                number = WORD_NUMBER_MAP[no_comma_word]
-            else:
-                try:
-                    number = int(no_comma_word)
+                    number = float(word)
                 except ValueError:
                     number = None
-            return number
+        return number
+    else:
+        no_comma_word = word.replace(",", "")
+        if no_comma_word in WORD_NUMBER_MAP:
+            number = WORD_NUMBER_MAP[no_comma_word]
+        else:
+            try:
+                number = int(no_comma_word)
+            except ValueError:
+                number = None
+        return number
 
-    @staticmethod
-    def find_valid_spans(
-            context_tokens: List[Token], answer_texts: List[str]
-    ) -> List[Tuple[int, int]]:
-        normalized_tokens = [
-            token.text.lower().strip(STRIPPED_CHARACTERS) for token in context_tokens
+
+def extract_answer_info_from_annotation(
+        answer_annotation: Dict[str, Any]
+) -> Tuple[str, List[str]]:
+    answer_type = None
+    if answer_annotation["spans"]:
+        answer_type = "spans"
+    elif answer_annotation["number"]:
+        answer_type = "number"
+    elif any(answer_annotation["date"].values()):
+        answer_type = "date"
+
+    answer_content = answer_annotation[answer_type] if answer_type is not None else None
+
+    answer_texts: List[str] = []
+    if answer_type is None:  # No answer
+        pass
+    elif answer_type == "spans":
+        # answer_content is a list of string in this case
+        answer_texts = answer_content
+    elif answer_type == "date":
+        # answer_content is a dict with "month", "day", "year" as the keys
+        date_tokens = [
+            answer_content[key]
+            for key in ["month", "day", "year"]
+            if key in answer_content and answer_content[key]
         ]
-        word_positions: Dict[str, List[int]] = defaultdict(list)
-        for i, token in enumerate(normalized_tokens):
-            word_positions[token].append(i)
-        spans = []
-        for answer_text in answer_texts:
-            answer_tokens = answer_text.lower().strip(STRIPPED_CHARACTERS).split()
-            num_answer_tokens = len(answer_tokens)
-            if answer_tokens[0] not in word_positions:
-                continue
-            for span_start in word_positions[answer_tokens[0]]:
-                span_end = span_start  # span_end is _inclusive_
-                answer_index = 1
-                while answer_index < num_answer_tokens and span_end + 1 < len(normalized_tokens):
-                    token = normalized_tokens[span_end + 1]
-                    if answer_tokens[answer_index].strip(STRIPPED_CHARACTERS) == token:
-                        answer_index += 1
-                        span_end += 1
-                    elif token in IGNORED_TOKENS:
-                        span_end += 1
-                    else:
-                        break
-                if num_answer_tokens == answer_index:
-                    spans.append((span_start, span_end))
-        return spans
-
-    @staticmethod
-    def find_valid_add_sub_expressions(
-            numbers: List[int], targets: List[int], max_number_of_numbers_to_consider: int = 2
-    ) -> List[List[int]]:
-        valid_signs_for_add_sub_expressions = []
-        # TODO: Try smaller numbers?
-        for number_of_numbers_to_consider in range(2, max_number_of_numbers_to_consider + 1):
-            possible_signs = list(itertools.product((-1, 1), repeat=number_of_numbers_to_consider))
-            for number_combination in itertools.combinations(
-                    enumerate(numbers), number_of_numbers_to_consider
-            ):
-                indices = [it[0] for it in number_combination]
-                values = [it[1] for it in number_combination]
-                for signs in possible_signs:
-                    eval_value = sum(sign * value for sign, value in zip(signs, values))
-                    if eval_value in targets:
-                        labels_for_numbers = [0] * len(numbers)  # 0 represents ``not included''.
-                        for index, sign in zip(indices, signs):
-                            labels_for_numbers[index] = (
-                                1 if sign == 1 else 2
-                            )  # 1 for positive, 2 for negative
-                        valid_signs_for_add_sub_expressions.append(labels_for_numbers)
-        return valid_signs_for_add_sub_expressions
-
-    @staticmethod
-    def find_valid_counts(count_numbers: List[int], targets: List[int]) -> List[int]:
-        valid_indices = []
-        for index, number in enumerate(count_numbers):
-            if number in targets:
-                valid_indices.append(index)
-        return valid_indices
+        answer_texts = date_tokens
+    elif answer_type == "number":
+        # answer_content is a string of number
+        answer_texts = [answer_content]
+    return answer_type, answer_texts

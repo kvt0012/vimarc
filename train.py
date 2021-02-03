@@ -37,7 +37,7 @@ def train_fixture(config_prefix: str) -> None:
 
 if __name__ == "__main__":
     models = [
-        "numnet"
+        "transformer_qa"
     ]
     for model in models:
         train_fixture(f"fixtures/{model}/")

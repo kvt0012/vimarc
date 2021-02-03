@@ -11,15 +11,15 @@ from allennlp.predictors.predictor import Predictor
 @Predictor.register("transformer_qa")
 class TransformerQAPredictor(Predictor):
     """
-    Predictor for the [`TransformerQA`](/models/main/models/transformer_qa#transformer_qa) model,
-    and any other model that takes a question and context as input.
+    Predictor for the [`TransformerQA`](/models/rc/models/transformer_qa#transformer_qa) model,
+    and any other model that takes a question and passage as input.
     """
 
     def __init__(self, model: Model, dataset_reader: DatasetReader) -> None:
         super(TransformerQAPredictor, self).__init__(model, dataset_reader)
         self._next_qid = 1
 
-    def predict(self, question: str, context: str) -> JsonDict:
+    def predict(self, question: str, passage: str) -> JsonDict:
         """
         Make a machine comprehension prediction on the supplied input.
         See [https://rajpurkar.github.io/SQuAD-explorer/](https://rajpurkar.github.io/SQuAD-explorer/)
@@ -30,7 +30,7 @@ class TransformerQAPredictor(Predictor):
         question : `str`
             A question about the content in the supplied paragraph.
 
-        context : `str`
+        passage : `str`
             A paragraph of information relevant to the question.
 
         # Returns
@@ -40,7 +40,7 @@ class TransformerQAPredictor(Predictor):
             The answer string will be under the `"best_span_str"` key.
 
         """
-        return self.predict_json({"context": context, "question": question})
+        return self.predict_json({"context": passage, "question": question})
 
     def predict_json(self, inputs: JsonDict) -> JsonDict:
         results = self.predict_batch_json([inputs])
@@ -55,22 +55,23 @@ class TransformerQAPredictor(Predictor):
         )
 
     def _json_to_instances(self, json_dict: JsonDict) -> List[Instance]:
-        # We allow the context / context to be specified with either key.
+        # We allow the passage / context to be specified with either key.
         # But we do it this way so that a 'KeyError: context' exception will be raised
         # when neither key is specified, since the 'context' key is the default and
-        # the 'context' key was only added to be compatible with the input for other
+        # the 'passage' key was only added to be compatible with the input for other
         # RC models.
-        context = json_dict["context"] if "context" in json_dict else json_dict["context"]
-        result = list(
-            self._dataset_reader.make_instances(
-                qid=str(self._next_qid),
-                question=json_dict["question"],
-                answers=[],
-                context=context,
-                first_answer_offset=None,
-                is_training=False,
-            )
-        )
+        context = json_dict["passage"] if "passage" in json_dict else json_dict["context"]
+        result: List[Instance] = []
+        for instance in self._dataset_reader.make_instances(
+            qid=str(self._next_qid),
+            question=json_dict["question"],
+            answers=[],
+            context=context,
+            first_answer_offset=None,
+            is_training=False,
+        ):
+            self._dataset_reader.apply_token_indexers(instance)
+            result.append(instance)
         self._next_qid += 1
         return result
 
